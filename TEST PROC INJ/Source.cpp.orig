@@ -1,0 +1,112 @@
+#include<Windows.h>
+#include<iostream>
+#include<TlHelp32.h>
+#include<stdlib.h>
+#include "mprocess.h"
+
+using namespace std;
+typedef int (WINAPI* msgparam)(HWND,LPSTR,LPSTR,UINT);
+int privileges();
+struct PARAMETERS
+{
+	DWORD MessageBoxinj;
+	char szText[50];
+	char szCaption[50];
+    int  szButtons;
+};
+static DWORD MyFunc(PARAMETERS* Message);
+DWORD WINAPI mytest(LPVOID params);
+static DWORD Stub();
+
+
+
+int main()
+{
+	if(privileges() ==0)
+	{
+
+	DWORD pid = (DWORD)find_win32_proc();
+	if(pid == 0) return 1;
+
+	HANDLE p = OpenProcess(PROCESS_ALL_ACCESS,false,pid);
+	if(p == 0) return 1;
+
+	PARAMETERS szInjectionData;
+	szInjectionData.MessageBoxinj = (DWORD)GetProcAddress(LoadLibrary(L"User32.dll"),"MessageBoxA");
+	szInjectionData.szButtons = MB_ICONERROR|MB_OK;
+	strcpy_s(szInjectionData.szCaption,"Hello World");
+	strcpy_s(szInjectionData.szText,"Called from Code Injection");
+
+	DWORD szFunctionSize = (DWORD) Stub - (DWORD)MyFunc;
+	LPVOID szFunctionAddress = VirtualAllocEx(p,0,szFunctionSize,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
+	WriteProcessMemory(p,szFunctionAddress,(VOID*)MyFunc,szFunctionSize,0);
+	LPVOID szDataAdress = VirtualAllocEx(p,0,sizeof(PARAMETERS),MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+	WriteProcessMemory(p,szDataAdress,&szInjectionData,sizeof(PARAMETERS),0);
+
+	HANDLE Thread = CreateRemoteThread(p,0,0,(LPTHREAD_START_ROUTINE)szFunctionAddress,szDataAdress,0,0);
+	std::cout<<"HANDLE Thread = CreateRemoteThread(p,0,0,(LPTHREAD_START_ROUTINE)szFunctionAddress,szDataAdress,0,0);\n";
+	std::cout<<"Thread: "<<Thread<<"\n";
+	if (Thread == NULL) {
+		std::cout<<"ERROR: "<<GetLastError()<<"\n";
+	}
+	
+	if(Thread !=0)
+	{
+	WaitForSingleObject(Thread, INFINITE);
+	VirtualFree(szFunctionAddress, 0, MEM_RELEASE); //free myFunc memory
+		VirtualFree(szDataAdress, 0, MEM_RELEASE); //free data memory
+		CloseHandle(Thread);
+		CloseHandle(p);  //don't wait for the thread to finish, just close the handle to the process
+		cout<<"Injection completed!"<<endl;
+	return 0;
+	}
+	}
+	else
+	{
+		std::cout<<"PRIVS\n";
+		exit(1);
+	}
+}
+
+static DWORD MyFunc(PARAMETERS * myparam){
+	msgparam MsgBox = (msgparam)myparam->MessageBoxinj;
+	 MsgBox(0, myparam->szText, myparam->szCaption, myparam->szButtons);
+           for(;;)
+		   {
+
+			}
+             return 0;
+}
+ 
+static DWORD Stub(){  
+  return 0;
+}
+
+int privileges(){
+  HANDLE Token;
+  TOKEN_PRIVILEGES tp;
+  if(OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,&Token))
+  {
+	LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &tp.Privileges[0].Luid);
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+		if (AdjustTokenPrivileges(Token, 0, &tp, sizeof(tp), NULL, NULL)==0){
+			std::cout<<"TOKENS FAILED\n";
+   		 return 1; //FAIL
+		}else{
+   		 return 0; //SUCCESS
+		}
+   }	  
+   return 1;
+}
+
+/* ---------- MY OWN TESTING AREA ---------- */
+
+DWORD WINAPI mytest(LPVOID params)
+{
+	MessageBox(HWND_DESKTOP, L"Greetings from the Hijacked Process!!!!\nDone with Process Injection.", L"defalt", MB_OK);
+
+	ExitThread(0);
+
+	return 0;
+}

@@ -1,0 +1,394 @@
+#pragma once
+#include <Windows.h>
+#include <iostream>
+// one can also use Winternl.h if needed
+//#include <Winternl.h> // for UNICODE_STRING and SYSTEM_INFORMATION_CLASS
+#include <stdio.h>
+#include <tchar.h>
+#include <string>
+#include <sstream>
+#include <psapi.h>
+#pragma comment (lib, "psapi.lib")
+
+#define STATUS_SUCCESS               ((NTSTATUS)0x00000000L)
+#define STATUS_INFO_LENGTH_MISMATCH  ((NTSTATUS)0xC0000004L)
+
+HANDLE ps(int procnum);
+BOOL isWin32Process(int procid);
+
+typedef enum _SYSTEM_INFORMATION_CLASS {
+    SystemProcessInformation = 5
+} SYSTEM_INFORMATION_CLASS;
+
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING;
+
+typedef LONG KPRIORITY; // Thread priority
+
+typedef struct _SYSTEM_PROCESS_INFORMATION_DETAILD {
+    ULONG NextEntryOffset;
+    ULONG NumberOfThreads;
+    LARGE_INTEGER SpareLi1;
+    LARGE_INTEGER SpareLi2;
+    LARGE_INTEGER SpareLi3;
+    LARGE_INTEGER CreateTime;
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER KernelTime;
+    UNICODE_STRING ImageName;
+    KPRIORITY BasePriority;
+    HANDLE UniqueProcessId;
+    ULONG InheritedFromUniqueProcessId;
+    ULONG HandleCount;
+    BYTE Reserved4[4];
+    PVOID Reserved5[11];
+    SIZE_T PeakPagefileUsage;
+    SIZE_T PrivatePageCount;
+    LARGE_INTEGER Reserved6[6];
+} SYSTEM_PROCESS_INFORMATION_DETAILD, *PSYSTEM_PROCESS_INFORMATION_DETAILD;
+
+typedef NTSTATUS (WINAPI *PFN_NT_QUERY_SYSTEM_INFORMATION)(
+  IN       SYSTEM_INFORMATION_CLASS SystemInformationClass,
+  IN OUT   PVOID SystemInformation,
+  IN       ULONG SystemInformationLength,
+  OUT OPTIONAL  PULONG ReturnLength
+);
+
+int proc_list() //Simply lists all the processes on the machine
+{
+    size_t bufferSize = 102400;
+    PSYSTEM_PROCESS_INFORMATION_DETAILD pspid=
+        (PSYSTEM_PROCESS_INFORMATION_DETAILD) malloc (bufferSize);
+    ULONG ReturnLength;
+    PFN_NT_QUERY_SYSTEM_INFORMATION pfnNtQuerySystemInformation = (PFN_NT_QUERY_SYSTEM_INFORMATION)
+        GetProcAddress (GetModuleHandle(TEXT("ntdll.dll")), "NtQuerySystemInformation");
+    NTSTATUS status;
+
+    while (TRUE) {
+        status = pfnNtQuerySystemInformation (SystemProcessInformation, (PVOID)pspid,
+                                              bufferSize, &ReturnLength);
+        if (status == STATUS_SUCCESS)
+            break;
+        else if (status != STATUS_INFO_LENGTH_MISMATCH) { // 0xC0000004L
+            printf("ERROR 0x%X\n", status);
+            return 1;   // error
+        }
+
+        bufferSize *= 2;
+        pspid = (PSYSTEM_PROCESS_INFORMATION_DETAILD) realloc ((PVOID)pspid, bufferSize);
+    }
+
+    for (;;
+         pspid=(PSYSTEM_PROCESS_INFORMATION_DETAILD)(pspid->NextEntryOffset + (PBYTE)pspid)) {
+
+			std::wstring er = (pspid->UniqueProcessId, (pspid->ImageName.Length && pspid->ImageName.Buffer)? pspid->ImageName.Buffer: L"");
+			const std::string s( er.begin(), er.end() );
+			std::cout<<s<<" (PID: "<<((int)pspid->UniqueProcessId)<<")\n";
+
+        if (pspid->NextEntryOffset == 0) break;
+    }
+
+    return 0;
+}
+
+int find_win32_proc() // returns the process id of the first *accessible* x86 process it comes across
+{
+    size_t bufferSize = 102400;
+    PSYSTEM_PROCESS_INFORMATION_DETAILD pspid=
+        (PSYSTEM_PROCESS_INFORMATION_DETAILD) malloc (bufferSize);
+    ULONG ReturnLength;
+    PFN_NT_QUERY_SYSTEM_INFORMATION pfnNtQuerySystemInformation = (PFN_NT_QUERY_SYSTEM_INFORMATION)
+        GetProcAddress (GetModuleHandle(TEXT("ntdll.dll")), "NtQuerySystemInformation");
+    NTSTATUS status;
+
+    while (TRUE) {
+        status = pfnNtQuerySystemInformation (SystemProcessInformation, (PVOID)pspid,
+                                              bufferSize, &ReturnLength);
+        if (status == STATUS_SUCCESS)
+            break;
+        else if (status != STATUS_INFO_LENGTH_MISMATCH) { // 0xC0000004L
+            printf("ERROR 0x%X\n", status);
+            return 1;   // error
+        }
+
+        bufferSize *= 2;
+        pspid = (PSYSTEM_PROCESS_INFORMATION_DETAILD) realloc ((PVOID)pspid, bufferSize);
+    }
+
+    for (;;
+         pspid=(PSYSTEM_PROCESS_INFORMATION_DETAILD)(pspid->NextEntryOffset + (PBYTE)pspid)) {
+
+			std::wstring er = (pspid->UniqueProcessId, (pspid->ImageName.Length && pspid->ImageName.Buffer)? pspid->ImageName.Buffer: L"");
+			const std::string s( er.begin(), er.end() );
+			if ((isWin32Process((int)pspid->UniqueProcessId)))
+			{
+				std::cout<<s<<" (PID: "<<((int)pspid->UniqueProcessId)<<")\n";
+				return (int)pspid->UniqueProcessId;
+			}
+
+        if (pspid->NextEntryOffset == 0) break;
+    }
+
+    return 0;
+}
+
+BOOL isWin32Process(int procid) // checks the process of the given process id for its architecture and returns true if it is x86 or false if x64
+{
+	BOOL isWin32;
+	HANDLE proctest = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, procid);
+	if (IsWow64Process(proctest, &isWin32))
+	{
+		return isWin32;
+	}
+	else
+	{
+		return FALSE;
+	}
+	return FALSE;
+}
+
+int proc_search(char* proc) //Searches for a process based on the name of the process with the extension (ex: "explorer.exe"), returns process id if one is found
+{
+    size_t bufferSize = 102400;
+    PSYSTEM_PROCESS_INFORMATION_DETAILD pspid=
+        (PSYSTEM_PROCESS_INFORMATION_DETAILD) malloc (bufferSize);
+    ULONG ReturnLength;
+    PFN_NT_QUERY_SYSTEM_INFORMATION pfnNtQuerySystemInformation = (PFN_NT_QUERY_SYSTEM_INFORMATION)
+        GetProcAddress (GetModuleHandle(TEXT("ntdll.dll")), "NtQuerySystemInformation");
+    NTSTATUS status;
+
+    while (TRUE) {
+        status = pfnNtQuerySystemInformation (SystemProcessInformation, (PVOID)pspid,
+                                              bufferSize, &ReturnLength);
+        if (status == STATUS_SUCCESS)
+            break;
+        else if (status != STATUS_INFO_LENGTH_MISMATCH) { // 0xC0000004L
+            printf("ERROR 0x%X\n", status);
+            return 1;   // error
+        }
+
+        bufferSize *= 2;
+        pspid = (PSYSTEM_PROCESS_INFORMATION_DETAILD) realloc ((PVOID)pspid, bufferSize);
+    }
+
+    for (;;
+         pspid=(PSYSTEM_PROCESS_INFORMATION_DETAILD)(pspid->NextEntryOffset + (PBYTE)pspid)) {
+
+			std::wstring er = (pspid->UniqueProcessId, (pspid->ImageName.Length && pspid->ImageName.Buffer)? pspid->ImageName.Buffer: L"");
+			const std::string s( er.begin(), er.end() );
+			if (strncmp((s.c_str()), proc, (strlen(proc)))==0)
+			{
+				std::stringstream ss;
+				char sends[200];
+				ss<<"MATCH: "<<s<<" (PID: "<<(int)pspid->UniqueProcessId<<", HANDLE: "<<pspid->UniqueProcessId<<")\n";
+				strcpy(sends, ss.str().c_str());
+				std::cout<<sends;
+				HANDLE proch = ps((int)pspid->UniqueProcessId);
+				return (int)pspid->UniqueProcessId;
+			}
+
+        if (pspid->NextEntryOffset == 0) break;
+    }
+
+    return 0;
+}
+
+HANDLE proch_search(char* proc) //Searches for a process based on the name of the process with the extension (ex: "explorer.exe"), returns handle to process if one is found
+{
+    size_t bufferSize = 102400;
+    PSYSTEM_PROCESS_INFORMATION_DETAILD pspid=
+        (PSYSTEM_PROCESS_INFORMATION_DETAILD) malloc (bufferSize);
+    ULONG ReturnLength;
+    PFN_NT_QUERY_SYSTEM_INFORMATION pfnNtQuerySystemInformation = (PFN_NT_QUERY_SYSTEM_INFORMATION)
+        GetProcAddress (GetModuleHandle(TEXT("ntdll.dll")), "NtQuerySystemInformation");
+    NTSTATUS status;
+
+    while (TRUE) {
+        status = pfnNtQuerySystemInformation (SystemProcessInformation, (PVOID)pspid,
+                                              bufferSize, &ReturnLength);
+        if (status == STATUS_SUCCESS)
+            break;
+        else if (status != STATUS_INFO_LENGTH_MISMATCH) { // 0xC0000004L
+            printf("ERROR 0x%X\n", status);
+            return NULL;   // error
+        }
+
+        bufferSize *= 2;
+        pspid = (PSYSTEM_PROCESS_INFORMATION_DETAILD) realloc ((PVOID)pspid, bufferSize);
+    }
+
+    for (;;
+         pspid=(PSYSTEM_PROCESS_INFORMATION_DETAILD)(pspid->NextEntryOffset + (PBYTE)pspid)) {
+
+			std::wstring er = (pspid->UniqueProcessId, (pspid->ImageName.Length && pspid->ImageName.Buffer)? pspid->ImageName.Buffer: L"");
+			const std::string s( er.begin(), er.end() );
+			if (strncmp((s.c_str()), proc, (strlen(proc)))==0)
+			{
+				std::stringstream ss;
+				char sends[200];
+				ss<<"MATCH: "<<s<<" (PID: "<<(int)pspid->UniqueProcessId<<", HANDLE: "<<pspid->UniqueProcessId<<")\n";
+				strcpy(sends, ss.str().c_str());
+				std::cout<<sends;
+				return pspid->UniqueProcessId;
+			}
+
+        if (pspid->NextEntryOffset == 0) break;
+    }
+
+    return 0;
+}
+
+
+/* __________ SIMPLE __________ */
+
+
+// To ensure correct resolution of symbols, add Psapi.lib to TARGETLIBS
+// and compile with -DPSAPI_VERSION=1
+
+void PrintProcessNameAndID( DWORD processID )
+{
+    TCHAR szProcessName[MAX_PATH] = TEXT("<unknown>");
+
+    // Get a handle to the process.
+
+    HANDLE hProcess = OpenProcess( PROCESS_QUERY_INFORMATION |
+                                   PROCESS_VM_READ,
+                                   FALSE, processID );
+
+    // Get the process name.
+
+    if (NULL != hProcess )
+    {
+        HMODULE hMod;
+        DWORD cbNeeded;
+
+        if ( EnumProcessModules( hProcess, &hMod, sizeof(hMod), 
+             &cbNeeded) )
+        {
+            GetModuleBaseName( hProcess, hMod, szProcessName, 
+                               sizeof(szProcessName)/sizeof(TCHAR) );
+        }
+    }
+
+    // Print the process name and identifier.
+
+	char buffer[MAX_PATH];									// convert the wchar szProcessName into a readable form
+        int ret;
+        ret = wcstombs ( buffer, szProcessName, sizeof(buffer) );
+        if (ret==32) buffer[31]='\0';
+	std::cout<<buffer<<" (PID: "<<processID<<")\n";
+	
+    // Release the handle to the process.
+
+    CloseHandle( hProcess );
+}
+
+int ps( void )
+{
+    // Get the list of process identifiers.
+
+    DWORD aProcesses[1024], cbNeeded, cProcesses;
+    unsigned int i;
+
+    if ( !EnumProcesses( aProcesses, sizeof(aProcesses), &cbNeeded ) )
+    {
+        return 1;
+    }
+
+
+    // Calculate how many process identifiers were returned.
+
+    cProcesses = cbNeeded / sizeof(DWORD);
+
+    // Print the name and process identifier for each process.
+
+    for ( i = 0; i < cProcesses; i++ )
+    {
+        if( aProcesses[i] != 0 )
+        {
+            PrintProcessNameAndID( aProcesses[i] );
+        }
+    }
+
+    return 0;
+}
+
+HANDLE PrintProcessNameAndIDh( DWORD processID, int procnum )	//returns handle if the process specified by "processID" has the same number as the process number specified by "procnum"
+{
+    TCHAR szProcessName[MAX_PATH] = TEXT("<unknown>");
+
+    // Get a handle to the process.
+
+    HANDLE hProcess = OpenProcess( PROCESS_QUERY_INFORMATION |
+                                   PROCESS_VM_READ,
+                                   FALSE, processID );
+
+    // Get the process name.
+
+    if (NULL != hProcess )
+    {
+        HMODULE hMod;
+        DWORD cbNeeded;
+
+        if ( EnumProcessModules( hProcess, &hMod, sizeof(hMod), 
+             &cbNeeded) )
+        {
+            GetModuleBaseName( hProcess, hMod, szProcessName, 
+                               sizeof(szProcessName)/sizeof(TCHAR) );
+        }
+    }
+
+    // Print the process name and identifier.
+
+	char buffer[MAX_PATH];									// convert the wchar szProcessName into a readable form
+        int ret;
+        ret = wcstombs ( buffer, szProcessName, sizeof(buffer) );
+        if (ret==32) buffer[31]='\0';
+	
+	if (procnum == processID)
+	{
+		return hProcess;
+	}
+	
+    // Release the handle to the process.
+
+	return NULL;
+
+    CloseHandle( hProcess );
+}
+
+HANDLE ps(int procnum)	//This function returns a temporary handle of the process with the process number spcified as "procnum"
+{
+	// Get the list of process identifiers.
+
+    DWORD aProcesses[1024], cbNeeded, cProcesses;
+    unsigned int i;
+
+    if ( !EnumProcesses( aProcesses, sizeof(aProcesses), &cbNeeded ) )
+    {
+        return NULL;
+    }
+
+
+    // Calculate how many process identifiers were returned.
+
+    cProcesses = cbNeeded / sizeof(DWORD);
+
+    // Print the name and process identifier for each process.
+
+    for ( i = 0; i < cProcesses; i++ )
+    {
+        if( aProcesses[i] != 0 )
+        {
+            HANDLE ret = PrintProcessNameAndIDh( aProcesses[i], procnum );
+			if (ret != NULL)
+			{
+				return ret;
+			}
+        }
+    }
+
+    return NULL;
+}
